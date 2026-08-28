@@ -1,4 +1,10 @@
-# Logs
+infra/.terraform/
+
+# Terraform
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/.terraform.lock.hcl# Logs
 logs
 *.log
 npm-debug.log*
@@ -22,3 +28,4 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+api/local.settings.json

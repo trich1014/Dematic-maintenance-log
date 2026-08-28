@@ -1,0 +1,13 @@
+{
+  "name": "maintenance-app-api",
+  "version": "1.0.0",
+  "main": "src/functions/*.js",
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/data-tables": "^13.2.2",
+    "@azure/functions": "^4.5.0",
+    "stripe": "^16.8.0"
+  }
+}
