@@ -113,6 +113,7 @@ resource "azurerm_linux_function_app" "this" {
 
   app_settings = {
     "FUNCTIONS_WORKER_RUNTIME" = var.runtime_stack
+    "AZURE_STORAGE_CONNECTION_STRING" = azurerm_storage_account.this.primary_connection_string
   }
 
   tags = var.tags

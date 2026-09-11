@@ -4,7 +4,7 @@ infra/.terraform/
 infra/.terraform/
 infra/terraform.tfstate
 infra/terraform.tfstate.backup
-infra/.terraform.lock.hcl# Logs
+# Logs
 logs
 *.log
 npm-debug.log*
@@ -29,3 +29,9 @@ dist-ssr
 *.sln
 *.sw?
 api/local.settings.json
+
+# Secrets / state
+**/*.tfstate
+**/*.tfstate.*
+*.tfvars
+.env

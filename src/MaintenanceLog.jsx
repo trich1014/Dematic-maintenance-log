@@ -1,8 +1,8 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 
 /* ------------------------------------------------------------------ */
 /*  DMS Maintenance Log — department prototype                    */
-/*  Demo build: data lives in memory (real version = SharePoint/DB)    */
+/*  Live data via /api/entries/{recurringproblems|fixlog}             */
 /* ------------------------------------------------------------------ */
 
 const now = () => new Date();
@@ -12,49 +12,88 @@ const fmt = (d) =>
     hour: "numeric", minute: "2-digit", hour12: true,
   });
 
+// Fallback demo data — only used if the API can't be reached at all.
 const seedDate = (daysAgo, h = 22, m = 30) => {
   const d = new Date();
   d.setDate(d.getDate() - daysAgo);
   d.setHours(h, m, 0, 0);
   return d;
 };
-
 const SEED = [
   { id: 1, status: "fixed", equipment: "Station 6 GTP", problem: "Repeated jams", fix: "Bad O-ring on roller — diagnosed, repair coordinated with first shift", tech: "Tony", opened: seedDate(20, 21, 15), resolved: seedDate(19, 6, 40) },
   { id: 2, status: "fixed", equipment: "GTP 5 & 6", problem: "Recurring ECC motor faults", fix: "Roller swap → ECC swap → resolved via ECC resets + MDR box power cycle", tech: "Tony", opened: seedDate(14, 19, 5), resolved: seedDate(13, 2, 20) },
-  { id: 3, status: "fixed", equipment: "Empty-carton conveyor", problem: "Motor 6 error; ECC warning latched", fix: "System reboot; fault cleared at PLC panel", tech: "Tony", opened: seedDate(9, 23, 50), resolved: seedDate(9, 1, 10), critical: true },
-  { id: 4, status: "fixed", equipment: "Large carton erector", problem: "Dropping boxes during forming", fix: "Adjusted bottom spring tension (opens blank before forming)", tech: "Tony", opened: seedDate(5, 20, 0), resolved: seedDate(5, 20, 35) },
   { id: 5, status: "open", equipment: "CRT label machine", problem: "Intermittent double/triple labels", tech: "Tony", opened: seedDate(1, 23, 30) },
   { id: 6, status: "open", equipment: "Top conveyor (leaving DMS)", problem: "Recurring jams", tech: "Tony", opened: seedDate(1, 23, 40) },
-  { id: 7, status: "open", equipment: "Rat conveyor (to spiral)", problem: "Recurring jams", tech: "Tony", opened: seedDate(1, 23, 45) },
-  { id: 8, status: "open", equipment: "Robot conveyor", problem: "Small boxes turning on the conveyor", tech: "Tony", opened: seedDate(0, 1, 43) },
 ];
 
 const TABS = ["Open", "Fix Log", "All", "Report"];
 
+const normalize = (list, status) =>
+  list.map((e) => ({
+    id: e.rowKey,
+    status,
+    equipment: e.equipment,
+    problem: e.problem,
+    tech: e.tech,
+    opened: new Date(e.opened),
+    ...(e.fix ? { fix: e.fix } : {}),
+    ...(e.resolved ? { resolved: new Date(e.resolved) } : {}),
+    ...(e.critical ? { critical: true } : {}),
+  }));
+
 export default function MaintenanceLog() {
-  const [entries, setEntries] = useState(SEED);
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [offline, setOffline] = useState(false);
   const [tab, setTab] = useState("Open");
   const [form, setForm] = useState({ equipment: "", problem: "", tech: "" });
   const [resolving, setResolving] = useState(null); // entry id being closed
   const [fixNote, setFixNote] = useState("");
   const [flash, setFlash] = useState("");
 
-  const open = useMemo(() => entries.filter((e) => e.status === "open"), [entries]);
-  const fixed = useMemo(() => entries.filter((e) => e.status === "fixed"), [entries]);
-
   const ping = (msg) => {
     setFlash(msg);
     setTimeout(() => setFlash(""), 2600);
   };
 
-  const logProblem = () => {
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [rpRes, flRes] = await Promise.all([
+          fetch("/api/entries/recurringproblems"),
+          fetch("/api/entries/fixlog"),
+        ]);
+        if (!rpRes.ok || !flRes.ok) throw new Error("API request failed");
+        const rp = await rpRes.json();
+        const fl = await flRes.json();
+        if (!cancelled) {
+          setEntries([...normalize(rp, "open"), ...normalize(fl, "fixed")]);
+        }
+      } catch (err) {
+        console.error("Failed to load entries from API", err);
+        if (!cancelled) {
+          setEntries(SEED);
+          setOffline(true);
+          ping("⚠ Couldn't reach the server — showing demo data only");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const open = useMemo(() => entries.filter((e) => e.status === "open"), [entries]);
+  const fixed = useMemo(() => entries.filter((e) => e.status === "fixed"), [entries]);
+
+  const logProblem = async () => {
     if (!form.equipment.trim() || !form.problem.trim()) {
       ping("close command — equipment and problem are required");
       return;
     }
     const entry = {
-      id: Math.max(0, ...entries.map((e) => e.id)) + 1,
+      id: Date.now(),
       status: "open",
       equipment: form.equipment.trim(),
       problem: form.problem.trim(),
@@ -65,19 +104,67 @@ export default function MaintenanceLog() {
     setForm({ equipment: "", problem: "", tech: form.tech });
     ping(`Logged — RP #${entry.id} · ${fmt(entry.opened)}`);
     setTab("Open");
+
+    if (offline) return;
+    try {
+      const res = await fetch("/api/entries/recurringproblems", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: entry.id,
+          equipment: entry.equipment,
+          problem: entry.problem,
+          tech: entry.tech,
+          opened: entry.opened.toISOString(),
+        }),
+      });
+      if (!res.ok) throw new Error("save failed");
+    } catch (err) {
+      console.error(err);
+      ping("⚠ Saved locally only — couldn't reach the server");
+    }
   };
 
-  const closeOut = (id) => {
+  const closeOut = async (id) => {
     if (!fixNote.trim()) {
       ping("close command — describe the fix before closing");
       return;
     }
-    setEntries(entries.map((e) =>
-      e.id === id ? { ...e, status: "fixed", fix: fixNote.trim(), resolved: now() } : e
-    ));
+    const target = entries.find((e) => e.id === id);
+    if (!target) return;
+
+    const resolvedAt = now();
+    const fixedEntry = { ...target, status: "fixed", fix: fixNote.trim(), resolved: resolvedAt };
+
+    setEntries(entries.map((e) => (e.id === id ? fixedEntry : e)));
     setResolving(null);
     setFixNote("");
-    ping(`Moved to Fix Log · ${fmt(now())}`);
+    ping(`Moved to Fix Log · ${fmt(resolvedAt)}`);
+
+    if (offline) return;
+    try {
+      const postRes = await fetch("/api/entries/fixlog", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: fixedEntry.id,
+          equipment: fixedEntry.equipment,
+          problem: fixedEntry.problem,
+          tech: fixedEntry.tech,
+          opened: fixedEntry.opened.toISOString(),
+          fix: fixedEntry.fix,
+          resolved: resolvedAt.toISOString(),
+          ...(fixedEntry.critical ? { critical: true } : {}),
+        }),
+      });
+      if (!postRes.ok) throw new Error("fixlog save failed");
+
+      const delRes = await fetch(`/api/entries/recurringproblems/${id}`, { method: "DELETE" });
+      if (!delRes.ok && delRes.status !== 404) throw new Error("recurringproblems delete failed");
+    } catch (err) {
+      console.error(err);
+      ping("⚠ Moved locally only — couldn't sync with the server");
+    }
   };
 
   const badge = (e) =>
@@ -185,12 +272,13 @@ export default function MaintenanceLog() {
 
   return (
     <div className="min-h-screen bg-zinc-900 text-zinc-100 font-sans">
-      {/* status bar */}
       <header className="border-b border-zinc-700 bg-zinc-950">
         <div className="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-lg font-bold tracking-wide">DMS · MAINTENANCE LOG</h1>
-            <p className="text-xs text-zinc-500 font-mono mt-0.5">DEPT PROTOTYPE — DEMO DATA, IN-MEMORY ONLY</p>
+            <p className="text-xs text-zinc-500 font-mono mt-0.5">
+              {offline ? "OFFLINE — DEMO DATA (server unreachable)" : "LIVE — SAVED TO AZURE"}
+            </p>
           </div>
           <div className="flex gap-4 font-mono text-center">
             <div>
@@ -206,7 +294,6 @@ export default function MaintenanceLog() {
       </header>
 
       <main className="max-w-3xl mx-auto px-4 py-5 space-y-5">
-        {/* entry form */}
         <section className="bg-zinc-800 rounded-md p-4 border border-zinc-700">
           <h2 className="text-xs font-bold tracking-widest text-zinc-400 mb-3">RP: LOG A PROBLEM</h2>
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_1.6fr_0.8fr_auto] gap-2">
@@ -245,7 +332,6 @@ export default function MaintenanceLog() {
           </div>
         )}
 
-        {/* tabs */}
         <nav className="flex gap-1">
           {TABS.map((t) => (
             <button
@@ -265,9 +351,10 @@ export default function MaintenanceLog() {
           ))}
         </nav>
 
-        {/* content */}
         {tab === "Report" ? (
           <Report />
+        ) : loading ? (
+          <p className="text-sm text-zinc-500 py-6 text-center">Loading…</p>
         ) : (
           <section className="space-y-2">
             {listFor.length === 0 ? (

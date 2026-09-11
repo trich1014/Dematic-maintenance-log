@@ -9,14 +9,22 @@
 
 const { TableClient } = require("@azure/data-tables");
 
-function getTableClient(tableName) {
+async function getTableClient(tableName) {
   const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
   if (!connectionString) {
     throw new Error(
       "AZURE_STORAGE_CONNECTION_STRING is not set. Add it in Function App > Configuration."
     );
   }
-  return TableClient.fromConnectionString(connectionString, tableName);
+  const client = TableClient.fromConnectionString(connectionString, tableName);
+  // Auto-create the table on first use so a fresh storage account doesn't
+  // need manual setup — ignore "already exists" (409).
+  try {
+    await client.createTable();
+  } catch (err) {
+    if (err.statusCode !== 409) throw err;
+  }
+  return client;
 }
 
 module.exports = { getTableClient };
